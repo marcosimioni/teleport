@@ -1,6 +1,8 @@
 <Tabs> 
 <TabItem scope={["oss","enterprise"]} label="Self-Hosted">
-Download the latest version of Teleport for your platform from our
+
+On the host where you will run the Auth Service and Proxy Service, download the
+latest version of Teleport for your platform from our
 [downloads page](https://goteleport.com/teleport/download) and follow the
 installation [instructions](../../installation.mdx).
 
@@ -40,6 +42,10 @@ Next, start the Teleport Auth and Proxy Services:
 ```code
 $ sudo teleport start
 ```
+
+You will run subsequent `tctl` commands on the host where you started the Auth
+and Proxy Services.
+
 </TabItem> 
 <TabItem label="Teleport Cloud" scope={["cloud"]}> 
 If you do not have a Teleport Cloud account, use our [signup form](https://goteleport.com/signup/) to
