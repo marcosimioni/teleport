@@ -25,6 +25,9 @@ import (
 	"sync"
 	"time"
 
+	"os/exec"
+	"os/user"
+
 	"golang.org/x/crypto/ssh"
 
 	"github.com/google/uuid"
@@ -57,6 +60,122 @@ var serverSessions = prometheus.NewGauge(
 		Help: "Number of active sessions to this host",
 	},
 )
+
+// todo(amk): make group/user management an interface, or make the
+//            operations overridable somehow for testing
+
+const groupExistExit = 9 // man GROUPADD(8), exit codes section
+const userExistExit = 9  // man USERADD(8), exit codes section
+
+func groupAdd(groupname string) (exitCode int, err error) {
+	groupaddBin, err := exec.LookPath("groupadd")
+	if err != nil {
+		return -1, trace.Wrap(err, "cant find groupadd binary")
+	}
+	cmd := exec.Command(groupaddBin, groupname)
+	err = cmd.Run()
+	return cmd.ProcessState.ExitCode(), err
+}
+
+func userAdd(username string, groups []string) (exitCode int, err error) {
+	useraddBin, err := exec.LookPath("useradd")
+	if err != nil {
+		return -1, trace.Wrap(err, "cant find useradd binary")
+	}
+	// useradd --create-home (username) (groups)...
+	args := append([]string{"--create-home", username}, groups...)
+	cmd := exec.Command(useraddBin, args...)
+	err = cmd.Run()
+	return cmd.ProcessState.ExitCode(), err
+}
+
+func addUserToGroups(username string, groups []string) (exitCode int, err error) {
+	usermodBin, err := exec.LookPath("usermod")
+	if err != nil {
+		return -1, trace.Wrap(err, "cant find usermod binary")
+	}
+	args := []string{"-aG"}
+	args = append(args, groups...)
+	args = append(args, username)
+	// usermod -aG (append groups) (username)
+	cmd := exec.Command(usermodBin, args...)
+	err = cmd.Run()
+	return cmd.ProcessState.ExitCode(), err
+}
+
+func userDel(username string) (exitCode int, err error) {
+	userdelBin, err := exec.LookPath("userdel")
+	if err != nil {
+		return -1, trace.Wrap(err, "cant find userdel binary")
+	}
+	// userdel -r (remove home) username
+	cmd := exec.Command(userdelBin, "-r", username)
+	err = cmd.Run()
+	return cmd.ProcessState.ExitCode(), err
+}
+
+type userCloser struct {
+	user string
+}
+
+func (u *userCloser) deleteUserInTeleportGroup() error {
+	tempUser, err := user.Lookup(u.user)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	ids, err := tempUser.GroupIds()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	teleportGroup, err := user.LookupGroup(types.TeleportServiceGroup)
+	for _, id := range ids {
+		if id == teleportGroup.Gid {
+			_, err := userDel(u.user)
+			return trace.Wrap(err)
+		}
+	}
+	log.Debug("Not deleting user %q, not a temporary user", u.user)
+	return nil
+}
+
+func (u *userCloser) Close() error {
+	return trace.Wrap(u.deleteUserInTeleportGroup())
+}
+
+func createTeleportServiceGroupIfNotExist() error {
+	_, err := user.LookupGroup(types.TeleportServiceGroup)
+	if err != nil && err == user.UnknownGroupError(types.TeleportServiceGroup) {
+		_, err := groupAdd(types.TeleportServiceGroup)
+		return trace.Wrap(err)
+	}
+	return trace.Wrap(err)
+}
+
+func createTemporaryUserAndAddToTeleportGroup(username string, groups []string) (*userCloser, bool, error) {
+	err := createTeleportServiceGroupIfNotExist()
+	if err != nil {
+		return nil, false, trace.Wrap(err)
+	}
+	tempUser, err := user.Lookup(username)
+	if tempUser != nil {
+		return nil, false, trace.AlreadyExists("User already exists")
+	}
+	if err != nil && err != user.UnknownUserError(username) {
+		return nil, false, trace.Wrap(err)
+	}
+	// TODO(lxea): create groups
+	code, err := userAdd(username, groups)
+	if code != userExistExit && err != nil {
+		return nil, false, trace.Wrap(err)
+	}
+	_, err = addUserToGroups(username, []string{types.TeleportServiceGroup})
+	if err != nil {
+		return nil, false, err
+	}
+	return &userCloser{
+		user: username,
+	}, true, nil
+}
 
 // SessionRegistry holds a map of all active sessions on a given
 // SSH server
@@ -179,6 +298,7 @@ func (s *SessionRegistry) emitSessionJoinEvent(ctx *ServerContext) {
 
 // OpenSession either joins an existing session or starts a new session.
 func (s *SessionRegistry) OpenSession(ch ssh.Channel, req *ssh.Request, ctx *ServerContext) error {
+
 	session := ctx.getSession()
 	if session != nil {
 		ctx.Infof("Joining existing session %v.", session.id)
@@ -206,6 +326,16 @@ func (s *SessionRegistry) OpenSession(ch ssh.Channel, req *ssh.Request, ctx *Ser
 
 		return nil
 	}
+	if ctx.Identity.RoleSet.AutoCreateUser(s.srv.GetInfo()) && ctx.Identity.TeleportUser == ctx.Identity.Login {
+		closer, created, err := createTemporaryUserAndAddToTeleportGroup(ctx.Identity.TeleportUser, []string{})
+		if err != nil && !trace.IsAlreadyExists(err) {
+			return trace.Wrap(err)
+		}
+		if created {
+			ctx.AddCloser(closer)
+		}
+	}
+
 	// session not found? need to create one. start by getting/generating an ID for it
 	sid, found := ctx.GetEnv(sshutils.SessionEnvVar)
 	if !found {
@@ -1684,7 +1814,7 @@ func (p *party) Close() (err error) {
 		close(p.termSizeC)
 		err = p.ch.Close()
 	})
-	return err
+	return trace.Wrap(err)
 }
 
 func (s *session) trackerGet() (types.SessionTracker, error) {

@@ -1577,6 +1577,12 @@ message RoleOptions {
     // CertExtensions specifies the key/values
     repeated CertExtension CertExtensions = 17
         [ (gogoproto.jsontag) = "cert_extensions,omitempty" ];
+
+    BoolValue AutoCreateUser = 18 [
+        (gogoproto.nullable) = true,
+        (gogoproto.jsontag) = "auto_create_user",
+        (gogoproto.customtype) = "BoolOption"
+    ];
 }
 
 message RecordSession {

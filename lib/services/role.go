@@ -727,6 +727,10 @@ type AccessChecker interface {
 
 	// CertificateExtensions returns the list of extensions for each role in the RoleSet
 	CertificateExtensions() []*types.CertExtension
+
+	// AutoCreateUser determinse whether a user is allowed to have a
+	// temporary user provisioned for them on a node
+	AutoCreateUser(s types.Server) bool
 }
 
 // FromSpec returns new RoleSet created from spec
@@ -1977,6 +1981,27 @@ func (set RoleSet) EnhancedRecordingSet() map[string]bool {
 	}
 
 	return m
+}
+
+func (set RoleSet) AutoCreateUser(s types.Server) bool {
+	allowed := true
+	fmt.Println(s)
+	for _, role := range set {
+		result, _, err := MatchLabels(role.GetNodeLabels(types.Allow), s.GetAllLabels())
+		if err != nil {
+			fmt.Println(err)
+			return false
+		}
+		if !result {
+			continue
+		}
+		autoCreateUser := role.GetOptions().AutoCreateUser
+		allowed = allowed && autoCreateUser != nil && autoCreateUser.Value
+		if !allowed {
+			return false
+		}
+	}
+	return true
 }
 
 // certificatePriority returns the priority of the certificate format. The
