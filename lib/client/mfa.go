@@ -153,7 +153,9 @@ func PromptMFAChallenge(
 			mfaPrompt := &mfaPrompt{LoginPrompt: prompt, otpCancel: otpCancel}
 
 			const user = ""
-			resp, _, err := promptWebauthn(ctx, origin, user, wanlib.CredentialAssertionFromProto(c.WebauthnChallenge), mfaPrompt)
+			resp, _, err := promptWebauthn(ctx, origin, wanlib.CredentialAssertionFromProto(c.WebauthnChallenge), mfaPrompt, &wancli.LoginOpts{
+				User: user,
+			})
 			respC <- response{kind: "WEBAUTHN", resp: resp, err: err}
 		}()
 	}
